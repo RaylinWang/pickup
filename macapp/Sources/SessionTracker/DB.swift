@@ -255,7 +255,11 @@ final class DB {
                     ELSE sessions.title
                 END,
                 last_active = excluded.last_active,
-                raw_path = excluded.raw_path
+                raw_path = CASE
+                    WHEN sessions.raw_path LIKE 'http://%' OR sessions.raw_path LIKE 'https://%'
+                    THEN sessions.raw_path
+                    ELSE excluded.raw_path
+                END
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(conn, sql, -1, &stmt, nil) == SQLITE_OK else { return }

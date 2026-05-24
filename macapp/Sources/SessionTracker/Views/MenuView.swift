@@ -406,7 +406,7 @@ private struct SessionMiniRow: View {
             Button {
                 JumpHelper.openSession(session)
             } label: {
-                Label("在 \(displayHost) 打开", systemImage: "arrow.up.right.square")
+                Label(openLabel, systemImage: "arrow.up.right.square")
             }
             Divider()
         }
@@ -466,6 +466,17 @@ private struct SessionMiniRow: View {
         if alert.runModal() == .alertFirstButtonReturn {
             store.renameSession(session.id, title: input.stringValue)
         }
+    }
+
+    private var openLabel: String {
+        if isTerminalHost(displayHost) {
+            return "恢复 \(displayHost)"
+        }
+        return "在 \(displayHost) 打开"
+    }
+
+    private func isTerminalHost(_ host: String) -> Bool {
+        ["Ghostty", "Terminal", "iTerm"].contains(host)
     }
 }
 
