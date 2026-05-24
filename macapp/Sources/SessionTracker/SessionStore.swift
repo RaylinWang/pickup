@@ -11,6 +11,7 @@ final class SessionStore: ObservableObject {
     }
 
     @Published var bundles: [TaskBundle] = []
+    @Published var archivedTasks: [TaskItem] = []
     @Published var unlinked: [SessionRow] = []
     @Published var lastRefresh = Date()
 
@@ -57,6 +58,30 @@ final class SessionStore: ObservableObject {
     func deleteTask(_ id: Int64) {
         guard let db = DB() else { return }
         db.deleteTask(id: id)
+        reload()
+    }
+
+    func archiveTask(_ id: Int64) {
+        guard let db = DB() else { return }
+        db.archiveTask(id: id)
+        reload()
+    }
+
+    func restoreTask(_ id: Int64) {
+        guard let db = DB() else { return }
+        db.restoreTask(id: id)
+        reload()
+    }
+
+    func moveTaskUp(_ id: Int64) {
+        guard let db = DB() else { return }
+        db.moveTask(id: id, offset: -1)
+        reload()
+    }
+
+    func moveTaskDown(_ id: Int64) {
+        guard let db = DB() else { return }
+        db.moveTask(id: id, offset: 1)
         reload()
     }
 
@@ -138,6 +163,7 @@ final class SessionStore: ObservableObject {
     func reload() {
         guard let db = DB() else {
             bundles = []
+            archivedTasks = []
             unlinked = []
             return
         }
@@ -149,6 +175,7 @@ final class SessionStore: ObservableObject {
                 notes: db.notes(forTask: t.id)
             )
         }
+        archivedTasks = db.archivedTasks()
         unlinked = db.unlinkedSessions()
         lastRefresh = Date()
     }

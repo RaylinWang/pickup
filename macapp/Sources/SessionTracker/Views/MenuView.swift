@@ -14,7 +14,12 @@ struct MenuView: View {
                         emptyState
                     } else {
                         ForEach(Array(store.bundles.enumerated()), id: \.element.id) { idx, bundle in
-                            TaskSection(bundle: bundle, store: store)
+                            TaskSection(
+                                bundle: bundle,
+                                store: store,
+                                canMoveUp: idx > 0,
+                                canMoveDown: idx < store.bundles.count - 1
+                            )
                             if idx < store.bundles.count - 1 {
                                 Divider().padding(.horizontal, 16)
                             }
@@ -52,6 +57,7 @@ struct MenuView: View {
             }
             .buttonStyle(.borderless)
             .help("恢复隐藏并刷新")
+            ArchiveMenu(store: store)
             Button {
                 NSApp.terminate(nil)
             } label: {
@@ -80,16 +86,56 @@ struct MenuView: View {
     }
 
     private func defaultNewProjectName() -> String {
-        let existing = Set(store.bundles.map { $0.task.name })
+        let activeNames = store.bundles.map { $0.task.name }
+        let archivedNames = store.archivedTasks.map(\.name)
+        let existing = Set(activeNames + archivedNames)
         var i = 1
         while existing.contains("新项目 \(i)") { i += 1 }
         return "新项目 \(i)"
     }
 }
 
+private struct ArchiveMenu: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        Menu {
+            if store.archivedTasks.isEmpty {
+                Text("暂无归档项目")
+            } else {
+                ForEach(store.archivedTasks) { task in
+                    Menu {
+                        Button {
+                            store.restoreTask(task.id)
+                        } label: {
+                            Label("恢复到项目列表", systemImage: "arrow.uturn.backward")
+                        }
+                        Button(role: .destructive) {
+                            store.deleteTask(task.id)
+                        } label: {
+                            Label("删除项目", systemImage: "trash")
+                        }
+                    } label: {
+                        Label(task.name, systemImage: "archivebox")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "archivebox")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("归档项目")
+    }
+}
+
 private struct TaskSection: View {
     let bundle: SessionStore.TaskBundle
     @ObservedObject var store: SessionStore
+    let canMoveUp: Bool
+    let canMoveDown: Bool
 
     @State private var editedName: String = ""
     @State private var editedDescription: String = ""
@@ -111,6 +157,19 @@ private struct TaskSection: View {
                 }
                 Menu {
                     Button {
+                        store.moveTaskUp(bundle.task.id)
+                    } label: {
+                        Label("上移", systemImage: "arrow.up")
+                    }
+                    .disabled(!canMoveUp)
+                    Button {
+                        store.moveTaskDown(bundle.task.id)
+                    } label: {
+                        Label("下移", systemImage: "arrow.down")
+                    }
+                    .disabled(!canMoveDown)
+                    Divider()
+                    Button {
                         focused = .name
                     } label: {
                         Label("编辑名称", systemImage: "pencil")
@@ -126,6 +185,11 @@ private struct TaskSection: View {
                         Label("添加链接", systemImage: "link")
                     }
                     Divider()
+                    Button {
+                        store.archiveTask(bundle.task.id)
+                    } label: {
+                        Label("归档项目", systemImage: "archivebox")
+                    }
                     Button(role: .destructive) {
                         store.deleteTask(bundle.task.id)
                     } label: {

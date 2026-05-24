@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     name TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -62,6 +63,13 @@ def init_db() -> None:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)")]
         if "description" not in cols:
             conn.execute("ALTER TABLE tasks ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        if "sort_order" not in cols:
+            conn.execute("ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE status = 'active' ORDER BY sort_order ASC, updated_at DESC, id DESC"
+        ).fetchall()
+        for idx, row in enumerate(rows):
+            conn.execute("UPDATE tasks SET sort_order = ? WHERE id = ?", (idx * 1000, row["id"]))
         scols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)")]
         if "host_app" not in scols:
             conn.execute("ALTER TABLE sessions ADD COLUMN host_app TEXT")

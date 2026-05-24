@@ -13,6 +13,13 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def new_top_sort_order(conn) -> int:
+    row = conn.execute("SELECT MIN(sort_order) AS min_order FROM tasks WHERE status = 'active'").fetchone()
+    if not row or row["min_order"] is None:
+        return 0
+    return int(row["min_order"]) - 1000
+
+
 def _human_age(iso_ts: str) -> str:
     if not iso_ts:
         return "?"
@@ -99,8 +106,11 @@ def cmd_new(args):
     with get_conn() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO tasks(name, status, created_at, updated_at) VALUES(?, 'active', ?, ?)",
-                (args.name, now_iso(), now_iso()),
+                """
+                INSERT INTO tasks(name, status, sort_order, created_at, updated_at)
+                VALUES(?, 'active', ?, ?, ?)
+                """,
+                (args.name, new_top_sort_order(conn), now_iso(), now_iso()),
             )
             print(f"Created task #{cur.lastrowid}: {args.name}")
         except sqlite3.IntegrityError:
@@ -158,7 +168,7 @@ def cmd_done(args):
 def cmd_list(args):
     with get_conn() as conn:
         tasks_rows = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'active' ORDER BY updated_at DESC"
+            "SELECT * FROM tasks WHERE status = 'active' ORDER BY sort_order ASC, updated_at DESC, id DESC"
         ).fetchall()
         if not tasks_rows:
             print("No active tasks. `cli.py new <name>` to create one.")

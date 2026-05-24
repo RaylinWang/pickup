@@ -7,6 +7,8 @@ struct TaskItem: Identifiable {
     let id: Int64
     let name: String
     let description: String
+    let status: String
+    let sortOrder: Int64
     let updatedAt: String
 }
 
@@ -59,21 +61,43 @@ final class DB {
         text(stmt, col) ?? fallback
     }
 
-    func activeTasks() -> [TaskItem] {
+    private func queryTasks(_ sql: String, bind: (OpaquePointer?) -> Void = { _ in }) -> [TaskItem] {
         var items: [TaskItem] = []
         var stmt: OpaquePointer?
-        let sql = "SELECT id, name, description, updated_at FROM tasks WHERE status='active' ORDER BY updated_at DESC"
         guard sqlite3_prepare_v2(conn, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
+        bind(stmt)
         while sqlite3_step(stmt) == SQLITE_ROW {
             items.append(TaskItem(
                 id: sqlite3_column_int64(stmt, 0),
                 name: textOr(stmt, 1),
                 description: textOr(stmt, 2),
-                updatedAt: textOr(stmt, 3)
+                status: textOr(stmt, 3),
+                sortOrder: sqlite3_column_int64(stmt, 4),
+                updatedAt: textOr(stmt, 5)
             ))
         }
         return items
+    }
+
+    func activeTasks() -> [TaskItem] {
+        let sql = """
+            SELECT id, name, description, status, sort_order, updated_at
+            FROM tasks
+            WHERE status = 'active'
+            ORDER BY sort_order ASC, updated_at DESC, id DESC
+        """
+        return queryTasks(sql)
+    }
+
+    func archivedTasks() -> [TaskItem] {
+        let sql = """
+            SELECT id, name, description, status, sort_order, updated_at
+            FROM tasks
+            WHERE status = 'archived'
+            ORDER BY updated_at DESC, sort_order ASC, id DESC
+        """
+        return queryTasks(sql)
     }
 
     // MARK: - Writes
@@ -81,13 +105,15 @@ final class DB {
     @discardableResult
     func createTask(name: String) -> Int64? {
         let now = ISO8601DateFormatter().string(from: Date())
-        let sql = "INSERT INTO tasks(name, description, status, created_at, updated_at) VALUES(?, '', 'active', ?, ?)"
+        let sortOrder = newTopSortOrder()
+        let sql = "INSERT INTO tasks(name, description, status, sort_order, created_at, updated_at) VALUES(?, '', 'active', ?, ?, ?)"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(conn, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 2, now, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, sortOrder)
         sqlite3_bind_text(stmt, 3, now, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, now, -1, SQLITE_TRANSIENT)
         guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
         return sqlite3_last_insert_rowid(conn)
     }
@@ -112,6 +138,43 @@ final class DB {
         execUpdate("DELETE FROM tasks WHERE id = ?") { stmt in
             sqlite3_bind_int64(stmt, 1, id)
         }
+    }
+
+    func archiveTask(id: Int64) {
+        execUpdate("UPDATE tasks SET status = 'archived', updated_at = ? WHERE id = ?") { stmt in
+            sqlite3_bind_text(stmt, 1, isoNow(), -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 2, id)
+        }
+        normalizeActiveTaskSortOrder()
+    }
+
+    func restoreTask(id: Int64) {
+        let sortOrder = newTopSortOrder()
+        execUpdate("UPDATE tasks SET status = 'active', sort_order = ?, updated_at = ? WHERE id = ?") { stmt in
+            sqlite3_bind_int64(stmt, 1, sortOrder)
+            sqlite3_bind_text(stmt, 2, isoNow(), -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 3, id)
+        }
+        normalizeActiveTaskSortOrder()
+    }
+
+    func moveTask(id: Int64, offset: Int) {
+        let order = activeTaskOrder()
+        guard let index = order.firstIndex(where: { $0.id == id }) else { return }
+        let targetIndex = index + offset
+        guard targetIndex >= 0 && targetIndex < order.count else { return }
+
+        let current = order[index]
+        let target = order[targetIndex]
+        execUpdate("UPDATE tasks SET sort_order = ? WHERE id = ?") { stmt in
+            sqlite3_bind_int64(stmt, 1, target.sortOrder)
+            sqlite3_bind_int64(stmt, 2, current.id)
+        }
+        execUpdate("UPDATE tasks SET sort_order = ? WHERE id = ?") { stmt in
+            sqlite3_bind_int64(stmt, 1, current.sortOrder)
+            sqlite3_bind_int64(stmt, 2, target.id)
+        }
+        normalizeActiveTaskSortOrder()
     }
 
     @discardableResult
@@ -444,9 +507,9 @@ final class DB {
         return String(hash, radix: 16)
     }
 
-    private func migrate() {
+    private func tableColumns(_ table: String) -> Set<String> {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(conn, "PRAGMA table_info(sessions)", -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(conn, "PRAGMA table_info(\(table))", -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
         var columns = Set<String>()
         while sqlite3_step(stmt) == SQLITE_ROW {
@@ -454,11 +517,61 @@ final class DB {
                 columns.insert(name)
             }
         }
-        if !columns.contains("title_override") {
+        return columns
+    }
+
+    private func migrate() {
+        let sessionColumns = tableColumns("sessions")
+        if !sessionColumns.contains("title_override") {
             sqlite3_exec(conn, "ALTER TABLE sessions ADD COLUMN title_override TEXT", nil, nil, nil)
         }
-        if !columns.contains("hidden_at") {
+        if !sessionColumns.contains("hidden_at") {
             sqlite3_exec(conn, "ALTER TABLE sessions ADD COLUMN hidden_at TEXT", nil, nil, nil)
+        }
+
+        let taskColumns = tableColumns("tasks")
+        if !taskColumns.contains("sort_order") {
+            sqlite3_exec(conn, "ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0", nil, nil, nil)
+        }
+        normalizeActiveTaskSortOrder()
+    }
+
+    private func newTopSortOrder() -> Int64 {
+        var stmt: OpaquePointer?
+        let sql = "SELECT MIN(sort_order) FROM tasks WHERE status = 'active'"
+        guard sqlite3_prepare_v2(conn, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL else {
+            return 0
+        }
+        return sqlite3_column_int64(stmt, 0) - 1000
+    }
+
+    private func activeTaskOrder() -> [(id: Int64, sortOrder: Int64)] {
+        var rows: [(id: Int64, sortOrder: Int64)] = []
+        var stmt: OpaquePointer?
+        let sql = """
+            SELECT id, sort_order
+            FROM tasks
+            WHERE status = 'active'
+            ORDER BY sort_order ASC, updated_at DESC, id DESC
+        """
+        guard sqlite3_prepare_v2(conn, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append((sqlite3_column_int64(stmt, 0), sqlite3_column_int64(stmt, 1)))
+        }
+        return rows
+    }
+
+    private func normalizeActiveTaskSortOrder() {
+        for (index, task) in activeTaskOrder().enumerated() {
+            let normalized = Int64(index * 1000)
+            if task.sortOrder == normalized { continue }
+            execUpdate("UPDATE tasks SET sort_order = ? WHERE id = ?") { stmt in
+                sqlite3_bind_int64(stmt, 1, normalized)
+                sqlite3_bind_int64(stmt, 2, task.id)
+            }
         }
     }
 
