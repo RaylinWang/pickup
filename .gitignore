@@ -9,3 +9,4 @@ __pycache__/
 macapp/.build/
 macapp/build/
 macapp/*.app/
+promo/output/
